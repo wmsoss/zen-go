@@ -1,0 +1,14 @@
+# Binaries
+zhonger-go
+*.exe
+*.test
+
+# Env and secrets
+.env
+*.env
+
+# Real deployment config (may contain intranet addresses; never committed)
+deploy/
+
+# Logs
+*.log
