@@ -7,7 +7,8 @@
 // 环境变量：ZHONGER_ADDR（默认 127.0.0.1:8080）、
 // ZHONGER_ADMIN_ADDR（默认 127.0.0.1:8081，生产上填 Tailscale IP:8081）、
 // ZHONGER_ADMIN_TOKEN（后台 Bearer 口令；未设置时后台一律 503，fail-closed）、
-// ZHONGER_DB（SQLite 文件路径，默认 ./zhonger.db；systemd 下即 /opt/zhonger/zhonger.db）。
+// ZHONGER_DB（SQLite 文件路径，默认 ./zhonger.db；生产上经环境文件指向
+// /opt/zhonger/data/zhonger.db，该目录须归 zhonger 用户所有并可写）。
 // 支付商未接入：结账一律 501，见 internal/payment（NoopProvider）。
 package main
 

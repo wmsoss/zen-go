@@ -24,3 +24,4 @@ cp -r deploy.example deploy
 - 后台口令只走环境变量（`EnvironmentFile` 指向的 `.env`），绝不写进仓库。
 - 未配口令时后台接口 fail-closed，直接返回 503。
 - 公共端口只监听 `127.0.0.1:8080`，对外流量一律经 nginx 反代。
+- 数据库：`ZHONGER_DB` 指向的 SQLite 文件（如 `/opt/zhonger/data/zhonger.db`）；该目录须归运行服务的专用用户所有并可写，否则启动时打不开数据库文件、服务起不来。
