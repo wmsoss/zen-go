@@ -1,4 +1,4 @@
-// zhonger-go: zhong-er.com Go 应用层入口（M1 骨架）。
+// zhonger-go: zhong-er.com Go 应用层入口（M2：商城 + 订单，支付留空）。
 //
 // 两个监听：
 //   - 公共服务：/api/healthz、/shop、/lab（nginx 反代到这里，见 deploy.example/）
@@ -6,7 +6,9 @@
 //
 // 环境变量：ZHONGER_ADDR（默认 127.0.0.1:8080）、
 // ZHONGER_ADMIN_ADDR（默认 127.0.0.1:8081，生产上填 Tailscale IP:8081）、
-// ZHONGER_ADMIN_TOKEN（后台 Bearer 口令；未设置时后台一律 503，fail-closed）。
+// ZHONGER_ADMIN_TOKEN（后台 Bearer 口令；未设置时后台一律 503，fail-closed）、
+// ZHONGER_DB（SQLite 文件路径，默认 ./zhonger.db；systemd 下即 /opt/zhonger/zhonger.db）。
+// 支付商未接入：结账一律 501，见 internal/payment（NoopProvider）。
 package main
 
 import (
@@ -20,6 +22,8 @@ import (
 	"time"
 
 	"zhonger/internal/admin"
+	"zhonger/internal/payment"
+	"zhonger/internal/store"
 	"zhonger/internal/web"
 )
 
@@ -37,14 +41,21 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	st, err := store.Open(envOr("ZHONGER_DB", "./zhonger.db"))
+	if err != nil {
+		log.Error("open store failed", "err", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
 	public := &http.Server{
 		Addr:              *addr,
-		Handler:           web.Router(),
+		Handler:           web.Router(st, payment.NoopProvider{}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	adm := &http.Server{
 		Addr:              *adminAddr,
-		Handler:           admin.Router(),
+		Handler:           admin.Router(st),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

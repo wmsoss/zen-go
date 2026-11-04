@@ -4,11 +4,12 @@
 
 ## 本地开发
 
-环境：Go 1.27，依赖 chi v5。
+环境：Go 1.27，依赖 chi v5 与 modernc.org/sqlite（纯 Go）。
 
 ```bash
 export PATH=~/sdk/go/bin:$PATH
 cd app
+go vet ./... && go test ./...
 go build -o /tmp/zhonger-go ./cmd/server
 ZHONGER_ADDR=127.0.0.1:8080 ZHONGER_ADMIN_ADDR=127.0.0.1:8081 \
   ZHONGER_ADMIN_TOKEN=test-token /tmp/zhonger-go
