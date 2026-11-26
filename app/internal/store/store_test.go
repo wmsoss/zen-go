@@ -107,6 +107,30 @@ func TestOrderLifecycle(t *testing.T) {
 		t.Fatalf("order snapshot wrong: %+v", o)
 	}
 
+	// O1 修复：下单生成随机 token，公共端只凭 token 取订单，自增 id 不再可用。
+	if len(o.Token) != 32 {
+		t.Fatalf("order token = %q, want 32 hex chars", o.Token)
+	}
+	byToken, err := s.GetOrderByToken(o.Token)
+	if err != nil || byToken.ID != o.ID {
+		t.Fatalf("GetOrderByToken: %+v, %v", byToken, err)
+	}
+	if _, err := s.GetOrderByToken("00000000000000000000000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetOrderByToken unknown token: err = %v, want ErrNotFound", err)
+	}
+	for _, bad := range []string{"", "1", "99999", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"} {
+		if _, err := s.GetOrderByToken(bad); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("GetOrderByToken(%q): err = %v, want ErrNotFound", bad, err)
+		}
+	}
+	o2, err := s.CreateOrder(p.ID, "other@example.com", 1)
+	if err != nil {
+		t.Fatalf("CreateOrder second: %v", err)
+	}
+	if o2.Token == o.Token {
+		t.Fatalf("duplicate order token %q", o.Token)
+	}
+
 	// 改价不影响已有订单快照。
 	p.PriceCents = 6000
 	if err := s.UpdateProduct(p); err != nil {
@@ -159,7 +183,7 @@ func TestOrderLifecycle(t *testing.T) {
 	}
 
 	orders, err := s.ListOrders()
-	if err != nil || len(orders) != 1 {
+	if err != nil || len(orders) != 2 {
 		t.Fatalf("ListOrders: n=%d, %v", len(orders), err)
 	}
 }
@@ -172,5 +196,40 @@ func TestValidateEmail(t *testing.T) {
 	}
 	if err := ValidateEmail("user+tag@example.co.uk"); err != nil {
 		t.Fatalf("ValidateEmail(valid): %v", err)
+	}
+}
+
+// TestOrderTokenMigration: 模拟 2026-11-26 之前的旧库（orders 表无 token 列
+// 或 token 为空），Open/迁移须回填随机 token 且不丢订单。
+func TestOrderTokenMigration(t *testing.T) {
+	s := openTestStore(t)
+	p := mustProduct(t, s, "book", 5000, true)
+	o, err := s.CreateOrder(p.ID, "buyer@example.com", 1)
+	if err != nil {
+		t.Fatalf("CreateOrder: %v", err)
+	}
+	// 抹掉 token，模拟旧库行。
+	if _, err := s.db.Exec(`UPDATE orders SET token = '' WHERE id = ?`, o.ID); err != nil {
+		t.Fatalf("clear token: %v", err)
+	}
+	if err := migrateOrderTokens(s.db); err != nil {
+		t.Fatalf("migrateOrderTokens: %v", err)
+	}
+	got, err := s.GetOrder(o.ID)
+	if err != nil {
+		t.Fatalf("GetOrder: %v", err)
+	}
+	if got.Token == "" || got.Token == o.Token {
+		t.Fatalf("backfilled token = %q, want fresh non-empty token", got.Token)
+	}
+	if byToken, err := s.GetOrderByToken(got.Token); err != nil || byToken.ID != o.ID {
+		t.Fatalf("GetOrderByToken after migrate: %+v, %v", byToken, err)
+	}
+	// 幂等：再跑一次迁移，token 不变。
+	if err := migrateOrderTokens(s.db); err != nil {
+		t.Fatalf("migrateOrderTokens again: %v", err)
+	}
+	if again, _ := s.GetOrder(o.ID); again.Token != got.Token {
+		t.Fatalf("token changed on second migrate: %q -> %q", got.Token, again.Token)
 	}
 }

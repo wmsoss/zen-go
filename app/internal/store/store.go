@@ -2,14 +2,16 @@
 //
 // 纯 Go 驱动（modernc.org/sqlite），无需 cgo。数据库文件路径由 ZHONGER_DB
 // 环境变量决定，默认 ./zhonger.db（systemd 下 WorkingDirectory=/opt/zhonger，
-// 即 /opt/zhonger/zhonger.db）。Open 时自动建表，无需手动迁移。
+// 即 /opt/zhonger/zhonger.db）。Open 时自动建表，旧库自动补订单 token 列并回填。
 //
 // 订单状态只有两种：pending_payment（待支付）和 cancelled（已取消）。
 // 在接入支付商之前不存在 paid 路径，订单永远停在 pending_payment。
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -56,8 +58,11 @@ type Product struct {
 }
 
 // Order: 订单。商品名与单价在下单时快照，之后改价不影响已有订单。
+// Token 是下单时生成的随机凭证：公共订单页只凭 token 访问，
+// 自增 id 绝不直接暴露，避免无凭据枚举买家邮箱（O1）。
 type Order struct {
 	ID          int64
+	Token       string
 	ProductID   int64
 	ProductName string
 	PriceCents  int64
@@ -96,6 +101,7 @@ CREATE TABLE IF NOT EXISTS orders (
 	price_cents INTEGER NOT NULL,
 	currency TEXT NOT NULL,
 	buyer_email TEXT NOT NULL,
+	token TEXT NOT NULL DEFAULT '',
 	quantity INTEGER NOT NULL CHECK (quantity > 0),
 	status TEXT NOT NULL DEFAULT 'pending_payment' CHECK (status IN ('pending_payment', 'cancelled')),
 	created_at TEXT NOT NULL,
@@ -130,8 +136,92 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// 旧库补齐：给 2026-11-26 之前建的 orders 表加 token 列并回填，
+	// 再建唯一索引。新库建表时 token 列已在 DDL 里，迁移是空操作。
+	if err := migrateOrderTokens(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate order tokens: %w", err)
+	}
 	return &Store{db: db}, nil
 }
+
+// migrateOrderTokens: 旧库没有 token 列时补列；空 token 的历史订单逐行回填
+// 随机 token；最后建唯一索引。调用方须保证单连接（Open 已 SetMaxOpenConns(1)）。
+func migrateOrderTokens(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(orders)`)
+	if err != nil {
+		return err
+	}
+	hasToken := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "token" {
+			hasToken = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasToken {
+		if _, err := db.Exec(`ALTER TABLE orders ADD COLUMN token TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	ids, err := queryEmptyTokenOrderIDs(db)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		tok, err := newOrderToken()
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE orders SET token = ? WHERE id = ?`, tok, id); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_token ON orders(token)`)
+	return err
+}
+
+func queryEmptyTokenOrderIDs(db *sql.DB) ([]int64, error) {
+	rows, err := db.Query(`SELECT id FROM orders WHERE token = ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// newOrderToken: 16 字节随机数，hex 编码后 32 字符，可直接放 URL。
+func newOrderToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+var tokenRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// validOrderToken: 只有 32 位小写 hex 才进库查询，其余一律按不存在处理。
+func validOrderToken(tok string) bool { return tokenRe.MatchString(tok) }
 
 // Close: 关闭数据库。
 func (s *Store) Close() error { return s.db.Close() }
@@ -224,7 +314,7 @@ func scanOrder(row interface {
 }) (*Order, error) {
 	var o Order
 	var created, updated string
-	if err := row.Scan(&o.ID, &o.ProductID, &o.ProductName, &o.PriceCents, &o.Currency, &o.BuyerEmail, &o.Quantity, &o.Status, &created, &updated); err != nil {
+	if err := row.Scan(&o.ID, &o.ProductID, &o.ProductName, &o.PriceCents, &o.Currency, &o.BuyerEmail, &o.Quantity, &o.Status, &created, &updated, &o.Token); err != nil {
 		return nil, err
 	}
 	var err error
@@ -238,7 +328,7 @@ func scanOrder(row interface {
 }
 
 const productColumns = `id, slug, name, description, price_cents, currency, active, created_at, updated_at`
-const orderColumns = `id, product_id, product_name, price_cents, currency, buyer_email, quantity, status, created_at, updated_at`
+const orderColumns = `id, product_id, product_name, price_cents, currency, buyer_email, quantity, status, created_at, updated_at, token`
 
 // CreateProduct: 新增商品，slug 冲突返回 ErrConflict。
 func (s *Store) CreateProduct(p *Product) error {
@@ -377,8 +467,12 @@ func (s *Store) CreateOrder(productID int64, buyerEmail string, quantity int) (*
 		return nil, fmt.Errorf("%w: product %q is not active", ErrValidation, p.Slug)
 	}
 	now := dbTime(time.Now())
-	res, err := tx.Exec(`INSERT INTO orders (product_id, product_name, price_cents, currency, buyer_email, quantity, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.PriceCents, p.Currency, strings.TrimSpace(buyerEmail), quantity, StatusPendingPayment, now, now)
+	tok, err := newOrderToken()
+	if err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(`INSERT INTO orders (product_id, product_name, price_cents, currency, buyer_email, token, quantity, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.PriceCents, p.Currency, strings.TrimSpace(buyerEmail), tok, quantity, StatusPendingPayment, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +486,7 @@ func (s *Store) CreateOrder(productID int64, buyerEmail string, quantity int) (*
 	created, _ := parseDBTime(now)
 	return &Order{
 		ID:          id,
+		Token:       tok,
 		ProductID:   p.ID,
 		ProductName: p.Name,
 		PriceCents:  p.PriceCents,
@@ -404,9 +499,22 @@ func (s *Store) CreateOrder(productID int64, buyerEmail string, quantity int) (*
 	}, nil
 }
 
-// GetOrder: 按 id 取订单。
+// GetOrder: 按 id 取订单。只供后台管理（已鉴权）使用，公共端绝不用它。
 func (s *Store) GetOrder(id int64) (*Order, error) {
 	o, err := scanOrder(s.db.QueryRow(`SELECT `+orderColumns+` FROM orders WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return o, err
+}
+
+// GetOrderByToken: 公共订单页与结账的唯一取数口。token 格式不对或不存在
+// 都返回 ErrNotFound，不区分两种情况，避免试探。
+func (s *Store) GetOrderByToken(token string) (*Order, error) {
+	if !validOrderToken(token) {
+		return nil, ErrNotFound
+	}
+	o, err := scanOrder(s.db.QueryRow(`SELECT `+orderColumns+` FROM orders WHERE token = ?`, token))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

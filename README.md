@@ -8,8 +8,8 @@ Hugo + Go 架构下一人公司站点的 Go 应用层：内容层走 Hugo 静态
 
 - 健康检查 `GET /api/healthz`
 - 商城：商品列表 `GET /shop`、商品详情 `GET /shop/{slug}`、下单（邮箱 + 数量）`POST /shop/{slug}/buy`
-- 订单确认页 `GET /orders/{id}`：订单停在 `pending_payment`，页面明示尚未接入支付、不会扣款
-- 支付缝：结账 `POST /api/orders/{id}/checkout` 与回调 `POST /api/webhooks/payment` 一律 `501 payment not configured`（见“支付”一节）
+- 订单确认页 `GET /orders/{token}`：下单时生成随机 token，订单停在 `pending_payment`，页面明示尚未接入支付、不会扣款；自增 id 不再作为公共访问凭据
+- 支付缝：结账 `POST /api/orders/{token}/checkout` 与回调 `POST /api/webhooks/payment` 一律 `501 payment not configured`（见“支付”一节）
 - AI 玩具占位页 `/lab`
 - 后台 `/admin/`：只监听内网地址 + Bearer 口令，未配口令时直接 503（fail-closed）；商品 CRUD、订单列表/查看/取消
 

@@ -208,16 +208,11 @@ func (h *handler) buy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/orders/%d", order.ID), http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/orders/%s", order.Token), http.StatusSeeOther)
 }
 
 func (h *handler) orderPage(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	o, err := h.store.GetOrder(id)
+	o, err := h.store.GetOrderByToken(chi.URLParam(r, "token"))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -230,12 +225,7 @@ func (h *handler) orderPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) checkout(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	o, err := h.store.GetOrder(id)
+	o, err := h.store.GetOrderByToken(chi.URLParam(r, "token"))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -289,8 +279,8 @@ func Router(s *store.Store, pay payment.Provider) http.Handler {
 	r.Get("/shop/", h.shopList)
 	r.Get("/shop/{slug}", h.shopDetail)
 	r.Post("/shop/{slug}/buy", h.buy)
-	r.Get("/orders/{id}", h.orderPage)
-	r.Post("/api/orders/{id}/checkout", h.checkout)
+	r.Get("/orders/{token}", h.orderPage)
+	r.Post("/api/orders/{token}/checkout", h.checkout)
 	r.Post("/api/webhooks/payment", h.paymentWebhook)
 	lab := placeholder("AI 玩具即将上线", "这里以后是 /lab：AI 小玩具入口（M4）。")
 	r.Get("/lab", lab)

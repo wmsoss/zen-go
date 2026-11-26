@@ -105,14 +105,14 @@ func TestBuyFlow(t *testing.T) {
 		t.Fatalf("buy: Location = %q", loc)
 	}
 	code, body := getBody(t, srv.URL+loc)
-	if code != 200 || !strings.Contains(body, "尚未接入支付") || !strings.Contains(body, "$39.98") {
+	if code != 200 || !strings.Contains(body, "尚未接入支付") || !strings.Contains(body, "$39.98") || !strings.Contains(body, "buyer@example.com") {
 		t.Fatalf("order page: %d %s", code, body)
 	}
 	orders, _ := s.ListOrders()
 	if len(orders) != 1 || orders[0].Status != store.StatusPendingPayment {
 		t.Fatalf("stored order: %+v", orders)
 	}
-	orderID := orders[0].ID
+	orderToken := orders[0].Token
 
 	// 非法输入：坏邮箱、坏数量、下架商品。
 	for _, tc := range []struct {
@@ -141,8 +141,8 @@ func TestBuyFlow(t *testing.T) {
 		t.Fatalf("invalid buys created orders: %d", len(orders))
 	}
 
-	// 结账：501 支付未接入。
-	resp, err = noRedirectClient.Post(srv.URL+fmt.Sprintf("/api/orders/%d/checkout", orderID), "application/json", nil)
+	// 结账：501 支付未接入，凭 token 访问。
+	resp, err = noRedirectClient.Post(srv.URL+fmt.Sprintf("/api/orders/%s/checkout", orderToken), "application/json", nil)
 	if err != nil {
 		t.Fatalf("checkout POST: %v", err)
 	}
@@ -162,9 +162,21 @@ func TestBuyFlow(t *testing.T) {
 		t.Fatalf("webhook: %d, want 501", resp.StatusCode)
 	}
 
-	// 不存在的订单页与结账。
+	// 不存在的订单页与结账；旧的 id 形式 URL 也已失效（O1 修复）。
 	code, _ = getBody(t, srv.URL+"/orders/99999")
 	if code != 404 {
 		t.Fatalf("missing order page: %d", code)
+	}
+	code, _ = getBody(t, srv.URL+"/orders/1")
+	if code != 404 {
+		t.Fatalf("id-based order page: %d, want 404", code)
+	}
+	resp, err = noRedirectClient.Post(srv.URL+"/api/orders/1/checkout", "application/json", nil)
+	if err != nil {
+		t.Fatalf("checkout POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("id-based checkout: %d, want 404", resp.StatusCode)
 	}
 }
