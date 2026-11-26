@@ -1,0 +1,32 @@
+name: Mirror to Gitee
+
+# One-way mirror: every push to main on GitHub is pushed to the Gitee
+# mirror (git@gitee.com:renvip/zen-go.git). Gitee is never committed to
+# directly, so force-push keeps the mirror in sync even if histories
+# drift. Requires the GITEE_PRIVATE_KEY repo secret (SSH private key
+# whose public half is a Gitee deploy key with write access).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Gitee
+        env:
+          GITEE_PRIVATE_KEY: ${{ secrets.GITEE_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$GITEE_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 gitee.com >> ~/.ssh/known_hosts
+          git remote add gitee git@gitee.com:renvip/zen-go.git
+          git push --force gitee main:main
